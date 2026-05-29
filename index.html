@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>ปลากระดี่ได้น้ำ 🐟</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    touch-action: none;
+  }
+  #gameWrapper {
+    position: relative;
+    width: 390px;
+    height: 700px;
+    overflow: hidden;
+    border-radius: 20px;
+    box-shadow: 0 0 60px rgba(0,200,255,0.3), 0 0 120px rgba(0,200,255,0.1);
+    border: 1px solid rgba(0,200,255,0.3);
+  }
+  canvas {
+    display: block;
+    background: #000;
+  }
+  #ui {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+  #score {
+    position: absolute;
+    top: 20px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 48px;
+    font-weight: bold;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(0,200,255,0.8), 0 2px 4px rgba(0,0,0,0.8);
+    letter-spacing: 4px;
+    font-family: 'Courier New', monospace;
+  }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: rgba(0,0,0,0.85);
+    pointer-events: all;
+    cursor: pointer;
+  }
+  #overlay.hidden { display: none; }
+  .title {
+    font-size: 28px;
+    color: #00c8ff;
+    text-shadow: 0 0 20px #00c8ff;
+    margin-bottom: 8px;
+    text-align: center;
+    font-weight: bold;
+    letter-spacing: 2px;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #88aacc;
+    margin-bottom: 30px;
+    text-align: center;
+    line-height: 1.6;
+  }
+  .fish-emoji {
+    font-size: 80px;
+    animation: flopp 0.5s ease-in-out infinite alternate;
+    margin-bottom: 20px;
+  }
+  @keyframes flopp {
+    from { transform: rotate(-20deg) translateY(0px); }
+    to   { transform: rotate(20deg) translateY(-10px); }
+  }
+  .tap-hint {
+    font-size: 16px;
+    color: #fff;
+    animation: blink 1s ease-in-out infinite;
+    border: 2px solid rgba(255,255,255,0.4);
+    padding: 12px 30px;
+    border-radius: 50px;
+    background: rgba(255,255,255,0.08);
+  }
+  @keyframes blink {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  #bestScore {
+    position: absolute;
+    top: 20px;
+    right: 16px;
+    font-size: 11px;
+    color: rgba(255,200,0,0.8);
+    text-align: right;
+    line-height: 1.5;
+  }
+  #combo {
+    position: absolute;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 20px;
+    color: #ffdd00;
+    text-shadow: 0 0 10px #ffaa00;
+    opacity: 0;
+    transition: opacity 0.3s;
+    white-space: nowrap;
+  }
+  #hint {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: rgba(255,255,255,0.35);
+    text-align: center;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<div id="gameWrapper">
+  <canvas id="canvas" width="390" height="700"></canvas>
+  <div id="ui">
+    <div id="score">0</div>
+    <div id="bestScore">🏆 BEST<br><span id="bestVal">0</span></div>
+    <div id="combo"></div>
+    <div id="hint">แตะรัวๆ เพื่อดิ้น!</div>
+  </div>
+  <div id="overlay">
+    <div class="fish-emoji">🐟</div>
+    <div class="title">ปลากระดี่ได้น้ำ</div>
+    <div class="subtitle">The Flapping Box<br>กล่องดิ้นพล่าน ฟิสิกส์เสียสติ</div>
+    <div class="tap-hint">👆 แตะเพื่อเริ่มเกม</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const W = 390, H = 700;
+
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('bestVal');
+const comboEl = document.getElementById('combo');
+
+let engine, world, runner;
+let head, body, tail;
+let headBodyConstraint, bodyTailConstraint;
+let pipes = [];
+let particles = [];
+let score = 0;
+let bestScore = parseInt(localStorage.getItem('ragdollBest') || '0');
+let gameState = 'idle'; // idle, playing, dead
+let frameCount = 0;
+let lastPipeX = W + 100;
+let bgStars = [];
+let shakeX = 0, shakeY = 0;
+let comboCount = 0;
+
+bestEl.textContent = bestScore;
+
+// ---- Generate background stars ----
+for (let i = 0; i < 80; i++) {
+  bgStars.push({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    r: Math.random() * 1.5 + 0.3,
+    speed: Math.random() * 0.5 + 0.2,
+    alpha: Math.random() * 0.7 + 0.2
+  });
+}
+
+// ---- Physics Setup ----
+function initPhysics() {
+  engine = Matter.Engine.create({ gravity: { x: 0, y: 2.2 } });
+  world = engine.world;
+
+  const cx = 100, cy = H / 2;
+  const segW = 28, segH = 18;
+  const gap = 6;
+
+  head = Matter.Bodies.rectangle(cx, cy - segH - gap, segW, segH, {
+    restitution: 0.6, friction: 0.2, density: 0.004,
+    label: 'head',
+    collisionFilter: { category: 0x0001, mask: 0x0002 }
+  });
+  body = Matter.Bodies.rectangle(cx, cy, segW + 4, segH + 2, {
+    restitution: 0.5, friction: 0.2, density: 0.006,
+    label: 'body',
+    collisionFilter: { category: 0x0001, mask: 0x0002 }
+  });
+  tail = Matter.Bodies.rectangle(cx, cy + segH + gap, segW - 6, segH - 4, {
+    restitution: 0.7, friction: 0.1, density: 0.002,
+    label: 'tail',
+    collisionFilter: { category: 0x0001, mask: 0x0002 }
+  });
+
+  headBodyConstraint = Matter.Constraint.create({
+    bodyA: head, bodyB: body,
+    pointA: { x: 0, y: segH / 2 },
+    pointB: { x: 0, y: -(segH / 2 + 1) },
+    stiffness: 0.15, damping: 0.05, length: gap
+  });
+  bodyTailConstraint = Matter.Constraint.create({
+    bodyA: body, bodyB: tail,
+    pointA: { x: 0, y: (segH / 2 + 1) },
+    pointB: { x: 0, y: -(segH / 2) },
+    stiffness: 0.15, damping: 0.05, length: gap
+  });
+
+  Matter.World.add(world, [head, body, tail, headBodyConstraint, bodyTailConstraint]);
+}
+
+// ---- Pipe ----
+function spawnPipe() {
+  const gapH = 170;
+  const gapY = 120 + Math.random() * (H - 300);
+  pipes.push({
+    x: W + 30,
+    topH: gapY,
+    botY: gapY + gapH,
+    botH: H - gapY - gapH,
+    scored: false,
+    hue: Math.floor(Math.random() * 60) + 160
+  });
+}
+
+// ---- Flap / Input ----
+function flap() {
+  if (gameState === 'idle') {
+    startGame();
+    return;
+  }
+  if (gameState === 'dead') return;
+
+  // Random ragdoll impulse
+  const fy = -0.045 + (Math.random() - 0.5) * 0.015;
+  const fx = (Math.random() - 0.48) * 0.012;
+  const torque = (Math.random() - 0.5) * 0.003;
+
+  Matter.Body.applyForce(head, head.position, { x: fx * 1.2, y: fy * 0.8 });
+  Matter.Body.applyForce(body, body.position, { x: fx, y: fy });
+  Matter.Body.applyForce(tail, tail.position, { x: -fx * 0.5, y: fy * 0.6 });
+  body.torque = torque;
+  tail.torque = -torque * 1.5;
+
+  // Spark particles
+  for (let i = 0; i < 5; i++) {
+    particles.push({
+      x: body.position.x, y: body.position.y,
+      vx: (Math.random() - 0.5) * 4,
+      vy: (Math.random() - 0.5) * 4 - 2,
+      life: 1, size: Math.random() * 4 + 1,
+      color: `hsl(${180 + Math.random() * 60},100%,70%)`
+    });
+  }
+}
+
+function startGame() {
+  gameState = 'playing';
+  overlay.classList.add('hidden');
+  score = 0;
+  comboCount = 0;
+  scoreEl.textContent = '0';
+  pipes = [];
+  particles = [];
+  frameCount = 0;
+  lastPipeX = W + 100;
+  initPhysics();
+}
+
+function die() {
+  gameState = 'dead';
+  shakeX = 15; shakeY = 10;
+
+  if (score > bestScore) {
+    bestScore = score;
+    localStorage.setItem('ragdollBest', bestScore);
+    bestEl.textContent = bestScore;
+  }
+
+  // Explosion particles
+  const bx = body.position.x, by = body.position.y;
+  for (let i = 0; i < 30; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 8 + 2;
+    particles.push({
+      x: bx, y: by,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1, size: Math.random() * 6 + 2,
+      color: `hsl(${Math.random() * 60},100%,65%)`
+    });
+  }
+
+  setTimeout(() => {
+    overlay.innerHTML = `
+      <div style="font-size:60px;margin-bottom:16px">💀</div>
+      <div class="title" style="color:#ff6060">ตายแล้วววว</div>
+      <div class="subtitle">คะแนน: <b style="color:#ffdd00;font-size:20px">${score}</b><br>สถิติ: ${bestScore}</div>
+      <div class="tap-hint">👆 แตะเพื่อเล่นใหม่</div>`;
+    overlay.classList.remove('hidden');
+    gameState = 'idle';
+  }, 1200);
+}
+
+// ---- Check collisions ----
+function checkCollision(seg) {
+  const pos = seg.position;
+  const r = 14;
+  if (pos.y - r < 0 || pos.y + r > H) return true;
+  for (let p of pipes) {
+    if (pos.x + r > p.x - 26 && pos.x - r < p.x + 26) {
+      if (pos.y - r < p.topH || pos.y + r > p.botY) return true;
+    }
+  }
+  return false;
+}
+
+// ---- Draw segment (box) ----
+function drawBox(seg, w, h, color, eyeOn) {
+  ctx.save();
+  ctx.translate(seg.position.x, seg.position.y);
+  ctx.rotate(seg.angle);
+
+  // Body shadow
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 18;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  roundRect(ctx, -w/2, -h/2, w, h, 5);
+  ctx.fill();
+
+  // Highlight
+  ctx.shadowBlur = 0;
+  const grad = ctx.createLinearGradient(0, -h/2, 0, h/2);
+  grad.addColorStop(0, 'rgba(255,255,255,0.25)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.15)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  roundRect(ctx, -w/2, -h/2, w, h, 5);
+  ctx.fill();
+
+  // Border
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  roundRect(ctx, -w/2, -h/2, w, h, 5);
+  ctx.stroke();
+
+  // Eye
+  if (eyeOn) {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(w/2 - 7, -2, 4, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(w/2 - 6, -2, 2, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function roundRect(c, x, y, w, h, r) {
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y);
+  c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r);
+  c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h);
+  c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r);
+  c.quadraticCurveTo(x, y, x + r, y);
+}
+
+// ---- Draw constraint wire ----
+function drawConstraint(c) {
+  const pa = Matter.Vector.add(c.bodyA.position,
+    Matter.Vector.rotate(c.pointA, c.bodyA.angle));
+  const pb = Matter.Vector.add(c.bodyB.position,
+    Matter.Vector.rotate(c.pointB, c.bodyB.angle));
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,200,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([3,3]);
+  ctx.beginPath();
+  ctx.moveTo(pa.x, pa.y);
+  ctx.lineTo(pb.x, pb.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// ---- Main loop ----
+function loop() {
+  requestAnimationFrame(loop);
+  frameCount++;
+
+  // Screen shake decay
+  shakeX *= 0.8; shakeY *= 0.8;
+
+  ctx.save();
+  ctx.translate(shakeX * (Math.random() - 0.5), shakeY * (Math.random() - 0.5));
+
+  // Background
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#050518');
+  bgGrad.addColorStop(1, '#0a1530');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars + scroll
+  for (let s of bgStars) {
+    if (gameState === 'playing') s.x -= s.speed;
+    if (s.x < 0) s.x = W;
+    ctx.globalAlpha = s.alpha;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- Game logic ---
+  if (gameState === 'playing') {
+    Matter.Engine.update(engine, 1000/60);
+
+    // Scroll & pipes
+    const speed = 2.8 + score * 0.04;
+    for (let p of pipes) p.x -= speed;
+    pipes = pipes.filter(p => p.x > -60);
+
+    if (!pipes.length || pipes[pipes.length - 1].x < W - 220) {
+      spawnPipe();
+    }
+
+    // Score
+    for (let p of pipes) {
+      if (!p.scored && p.x + 26 < body.position.x) {
+        p.scored = true;
+        score++;
+        comboCount++;
+        scoreEl.textContent = score;
+
+        // Combo flash
+        comboEl.style.opacity = '1';
+        comboEl.textContent = comboCount >= 5 ? `🔥 COMBO x${comboCount}!!` : `+1`;
+        clearTimeout(comboEl._t);
+        comboEl._t = setTimeout(() => { comboEl.style.opacity = '0'; }, 600);
+      }
+    }
+
+    // Death check
+    if (checkCollision(head) || checkCollision(body) || checkCollision(tail)) {
+      die();
+    }
+  }
+
+  // Draw pipes
+  for (let p of pipes) {
+    const pw = 52;
+    const hue = p.hue;
+
+    ctx.save();
+    // Top pipe
+    ctx.shadowColor = `hsl(${hue},100%,60%)`;
+    ctx.shadowBlur = 20;
+    const g1 = ctx.createLinearGradient(p.x - pw/2, 0, p.x + pw/2, 0);
+    g1.addColorStop(0, `hsl(${hue},70%,28%)`);
+    g1.addColorStop(0.5, `hsl(${hue},80%,40%)`);
+    g1.addColorStop(1, `hsl(${hue},70%,22%)`);
+    ctx.fillStyle = g1;
+    ctx.beginPath();
+    roundRect(ctx, p.x - pw/2, -10, pw, p.topH + 10, 8);
+    ctx.fill();
+
+    // Top pipe cap
+    ctx.fillStyle = `hsl(${hue},80%,45%)`;
+    ctx.beginPath();
+    roundRect(ctx, p.x - pw/2 - 4, p.topH - 18, pw + 8, 18, 4);
+    ctx.fill();
+
+    // Bottom pipe
+    ctx.fillStyle = g1;
+    ctx.beginPath();
+    roundRect(ctx, p.x - pw/2, p.botY, pw, H - p.botY + 10, 8);
+    ctx.fill();
+
+    // Bottom cap
+    ctx.fillStyle = `hsl(${hue},80%,45%)`;
+    ctx.beginPath();
+    roundRect(ctx, p.x - pw/2 - 4, p.botY, pw + 8, 18, 4);
+    ctx.fill();
+
+    // Shine
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    roundRect(ctx, p.x - pw/2 + 6, -10, 10, p.topH + 10, 4);
+    ctx.fill();
+    ctx.beginPath();
+    roundRect(ctx, p.x - pw/2 + 6, p.botY, 10, H - p.botY + 10, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Draw ragdoll fish
+  if (gameState === 'playing' || gameState === 'dead') {
+    drawConstraint(headBodyConstraint);
+    drawConstraint(bodyTailConstraint);
+    drawBox(tail, 22, 14, '#ff6b35', false);
+    drawBox(body, 32, 20, '#00b4d8', false);
+    drawBox(head, 28, 18, '#48cae4', true);
+  }
+
+  // Particles
+  particles = particles.filter(p => p.life > 0.01);
+  for (let p of particles) {
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.15;
+    p.life *= 0.92;
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI*2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  ctx.globalAlpha = 1;
+
+  // Ground/ceiling line
+  ctx.strokeStyle = 'rgba(0,200,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(W,0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,H); ctx.lineTo(W,H); ctx.stroke();
+
+  ctx.restore();
+}
+
+// ---- Events ----
+function handleInput(e) {
+  e.preventDefault();
+  flap();
+}
+
+canvas.addEventListener('touchstart', handleInput, { passive: false });
+canvas.addEventListener('mousedown', handleInput);
+overlay.addEventListener('touchstart', handleInput, { passive: false });
+overlay.addEventListener('mousedown', handleInput);
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') flap();
+});
+
+loop();
+</script>
+</body>
+</html>
